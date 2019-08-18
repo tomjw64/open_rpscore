@@ -383,6 +383,8 @@ mod tests {
       },
       _ => false
     });
+
+    // TODO: Add assert for products
   }
 
   #[test]
@@ -418,5 +420,7 @@ mod tests {
       },
       _ => false
     });
+
+    // TODO: Add assert for products
   }
 }
