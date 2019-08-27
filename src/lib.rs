@@ -32,6 +32,35 @@ struct CompetitorOrdinals<'a> {
 }
 
 impl CompetitorOrdinals<'_> {
+  fn minimize<'a, 'b>(initial: &[&'a CompetitorOrdinals<'b>]) -> Vec<CompetitorOrdinals<'b>> {
+    let num_competitors = initial.len();
+    let judges = initial[0].ordinal_scores.keys();
+    let mut grouped_hash: HashMap<&'a Judge, Vec<u8>> = HashMap::new();
+    judges.for_each(|&judge| {
+      grouped_hash.insert(
+        judge,
+        initial.iter().map(move |scores| {
+          *scores.ordinal_scores.get(judge).expect("Ordinals have not been validated.")
+        }).sorted().collect());
+    });
+    
+    let result = initial.iter().map(|scores| {
+      CompetitorOrdinals {
+        competitor: scores.competitor,
+        ordinal_scores: scores.ordinal_scores.iter().map(|(&key, value)| {
+          (key,
+          grouped_hash
+            .get(key)
+            .expect("Ordinals have not been validated")
+            .iter()
+            .position(|maybe_value| maybe_value == value)
+            .expect("Ordinals have not been validated") as u8)
+        }).collect()
+      }
+    }).collect();
+    result
+  }
+
   fn below_or_equal(&self, value: u8) -> impl Iterator<Item = &u8> {
     self.ordinal_scores
       .values()
@@ -72,6 +101,7 @@ impl CompetitorOrdinals<'_> {
   }
 }
 
+#[derive(PartialEq, Debug)]
 enum ResultFactor {
   ClearMajority,
   GreaterMajority,
@@ -81,40 +111,39 @@ enum ResultFactor {
   TieBroken
 }
 
+#[derive(PartialEq, Debug)]
 enum TabulationError {
   ZeroSize,
   NoHeadJudge
 }
 
+#[derive(Debug)]
 struct ResultComparison<'a> {
   favored: &'a Competitor,
   unfavored: &'a Competitor,
   factor: ResultFactor
 }
 
-struct Tabulation<'a> {
-  placements: Vec<&'a Competitor>,
-  comparisons: Vec<ResultComparison<'a>>
-}
-
-enum TabulationStepOutcome<'a> {
+#[derive(Debug)]
+enum TabulationOutcome<'a> {
   Win { place: u8, who: &'a Competitor },
   Tie { place: u8, who: Vec<&'a CompetitorOrdinals<'a>> }
 }
 
-struct TabulationStepResult<'a> {
-  outcomes: Vec<TabulationStepOutcome<'a>>,
+#[derive(Debug)]
+struct Tabulation<'a> {
+  outcomes: Vec<TabulationOutcome<'a>>,
   products: Vec<ResultComparison<'a>>
 }
 
-impl<'a: 'b, 'b> Tabulation<'a> {
+impl<'a: 'b, 'b> Tabulation<'_> {
   fn comparison_step<T: PartialEq, G: Fn(&CompetitorOrdinals) -> T, S: Fn(&T, &T) -> Ordering>(
       group_function: G,
       sort_function: S,
       factor: impl Fn() -> ResultFactor) 
-        -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> TabulationStepResult<'a> {
+        -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
     move |place, tied| {
-      let mut result = TabulationStepResult {
+      let mut result = Tabulation {
         outcomes: vec![],
         products: vec![]
       };
@@ -132,8 +161,8 @@ impl<'a: 'b, 'b> Tabulation<'a> {
       sorted_groups.iter().for_each(|group| {
         result.outcomes.push(match group.len() {
           0 => panic!("Unexpected zero size group"),
-          1 => TabulationStepOutcome::Win { place: place + offset, who: group[0].competitor },
-          _ => TabulationStepOutcome::Tie { place: place + offset, who: group.clone() }
+          1 => TabulationOutcome::Win { place: place + offset, who: group[0].competitor },
+          _ => TabulationOutcome::Tie { place: place + offset, who: group.clone() }
         });
       
         traversed.iter().for_each(|t_competitor_scores| {
@@ -154,28 +183,28 @@ impl<'a: 'b, 'b> Tabulation<'a> {
     }
   }
 
-  fn clear_majority_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> TabulationStepResult<'a> {
+  fn clear_majority_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
     let group_function = |scores: &CompetitorOrdinals| scores.majority_reached_ordinal();
     let sort_function = |key: &u8, key_other: &u8| key.cmp(key_other);
     let factor = || ResultFactor::ClearMajority;
     Tabulation::comparison_step(group_function, sort_function, factor)
   }
 
-  fn greater_majority_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> TabulationStepResult<'a> {
+  fn greater_majority_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
     let group_function = |scores: &CompetitorOrdinals| scores.count_below_or_equal(scores.majority_reached_ordinal());
     let sort_function = |key: &u8, key_other: &u8| key.cmp(key_other).reverse();
     let factor = || ResultFactor::GreaterMajority;
     Tabulation::comparison_step(group_function, sort_function, factor)
   }
 
-  fn sum_below_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> TabulationStepResult<'a> {
+  fn sum_below_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
     let group_function = |scores: &CompetitorOrdinals| scores.sum_below_or_equal(scores.majority_reached_ordinal());
     let sort_function = |key: &u8, key_other: &u8| key.cmp(key_other);
     let factor = || ResultFactor::SumBelow;
     Tabulation::comparison_step(group_function, sort_function, factor)
   }
 
-  fn following_score_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> TabulationStepResult<'a> {
+  fn following_score_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
     fn u8_slice_compare(slice: &[u8], other_slice: &[u8]) -> Ordering {
       let zipped: Vec<(u8, &u8)> = slice
         .iter()
@@ -198,44 +227,49 @@ impl<'a: 'b, 'b> Tabulation<'a> {
   }
 
   fn step_collapse(
-      step_results: TabulationStepResult<'a>,
-      next_step: &(dyn Fn(u8, &[&'a CompetitorOrdinals]) -> TabulationStepResult<'a> + 'b))
-      -> TabulationStepResult<'a> {
-    let mut collapse_outcomes: Vec<TabulationStepOutcome<'a>> = vec![];
+      step_results: Tabulation<'a>,
+      next_step: &(dyn Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> + 'b))
+      -> Tabulation<'a> {
+    let mut collapse_outcomes: Vec<TabulationOutcome<'a>> = vec![];
     let mut collapse_products: Vec<ResultComparison<'a>> = step_results.products;
     step_results.outcomes.into_iter().for_each(|outcome| {
       match outcome {
-        TabulationStepOutcome::Win { place, who } => { collapse_outcomes.push(outcome)},
-        TabulationStepOutcome::Tie { place, who } => {
+        TabulationOutcome::Win { place, who } => { collapse_outcomes.push(outcome)},
+        TabulationOutcome::Tie { place, who } => {
           let next_step_results = next_step(place, &who);
           collapse_outcomes.extend(next_step_results.outcomes.into_iter());
           collapse_products.extend(next_step_results.products.into_iter());
         }
       };
     });
-    TabulationStepResult {
+    Tabulation {
       outcomes: collapse_outcomes,
       products: collapse_products
     }
   }
 
-  fn from(scores: &[&'a CompetitorOrdinals<'a>]) -> Result<TabulationStepResult<'a>, TabulationError> {
-    let comparison_steps: [Box<dyn Fn(u8, &[&'a CompetitorOrdinals]) -> TabulationStepResult<'a> + 'b>; 4] = [
+  fn full(scores: &[&'a CompetitorOrdinals<'a>]) -> Result<Tabulation<'a>, TabulationError> {
+    let comparison_steps: [Box<dyn Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> + 'b>; 4] = [
       Box::new(Tabulation::clear_majority_step()),
       Box::new(Tabulation::greater_majority_step()),
       Box::new(Tabulation::sum_below_step()),
       Box::new(Tabulation::following_score_step())
     ];
-
     
-    let initial = TabulationStepResult {
-      outcomes: vec![TabulationStepOutcome::Tie { place: 1u8, who: scores.to_vec()} ],
+    let initial = Tabulation {
+      outcomes: vec![TabulationOutcome::Tie { place: 1u8, who: scores.to_vec()} ],
       products: vec![]
     };
-    let first_round = comparison_steps.iter().fold(initial, |collapsed, step| Tabulation::step_collapse(collapsed, step));
+    let comparison_round = comparison_steps.iter().fold(initial, |collapsed, step| Tabulation::step_collapse(collapsed, step));
     
-    // Err(TabulationError::ZeroSize)
-    Ok(first_round)
+    // let equal_scores_round = comparison_round.outcomes.iter().filter(|outcome| {
+    //   match outcome {
+    //     TabulationOutcome::Tie { place, who } => true,
+    //     _ => {}
+    //   }
+    // });
+
+    Ok(comparison_round)
   }
 }
 
@@ -402,11 +436,11 @@ mod tests {
     let outcomes = &step_results.outcomes;
     assert_eq!(outcomes.len(), 2);
     assert!(match outcomes[0] {
-      TabulationStepOutcome::Win{ place: 1u8, who } => *who == competitors[0],
+      TabulationOutcome::Win{ place: 1u8, who } => *who == competitors[0],
       _ => false
     });
     assert!(match outcomes[1] {
-      TabulationStepOutcome::Win{ place: 2u8, who } => *who == competitors[1],
+      TabulationOutcome::Win{ place: 2u8, who } => *who == competitors[1],
       _ => false
     });
 
@@ -439,7 +473,7 @@ mod tests {
     
     let outcomes = &step_results.outcomes;
     assert!(match outcomes[0] {
-      TabulationStepOutcome::Tie{ place: 1u8, who: ref tied } => {
+      TabulationOutcome::Tie{ place: 1u8, who: ref tied } => {
         tied.len() == 2 &&
         tied.iter().any(|&scores| *scores.competitor == competitors[0]) &&
         tied.iter().any(|&scores| *scores.competitor == competitors[1])
@@ -470,11 +504,11 @@ mod tests {
     let outcomes = &step_results.outcomes;
     assert_eq!(outcomes.len(), 2);
     assert!(match outcomes[0] {
-      TabulationStepOutcome::Win{ place: 1u8, who } => *who == competitors[1],
+      TabulationOutcome::Win{ place: 1u8, who } => *who == competitors[1],
       _ => false
     });
     assert!(match outcomes[1] {
-      TabulationStepOutcome::Win{ place: 2u8, who } => *who == competitors[0],
+      TabulationOutcome::Win{ place: 2u8, who } => *who == competitors[0],
       _ => false
     });
 
@@ -508,11 +542,11 @@ mod tests {
     let outcomes = &step_results.outcomes;
     assert_eq!(outcomes.len(), 2);
     assert!(match outcomes[0] {
-      TabulationStepOutcome::Win{ place: 1u8, who } => *who == competitors[1],
+      TabulationOutcome::Win{ place: 1u8, who } => *who == competitors[1],
       _ => false
     });
     assert!(match outcomes[1] {
-      TabulationStepOutcome::Win{ place: 2u8, who } => *who == competitors[0],
+      TabulationOutcome::Win{ place: 2u8, who } => *who == competitors[0],
       _ => false
     });
 
@@ -546,11 +580,11 @@ mod tests {
     let outcomes = &step_results.outcomes;
     assert_eq!(outcomes.len(), 2);
     assert!(match outcomes[0] {
-      TabulationStepOutcome::Win{ place: 1u8, who } => *who == competitors[0],
+      TabulationOutcome::Win{ place: 1u8, who } => *who == competitors[0],
       _ => false
     });
     assert!(match outcomes[1] {
-      TabulationStepOutcome::Win{ place: 2u8, who } => *who == competitors[1],
+      TabulationOutcome::Win{ place: 2u8, who } => *who == competitors[1],
       _ => false
     });
 
@@ -582,10 +616,115 @@ mod tests {
     );
     let scores_refs: Vec<&CompetitorOrdinals> = scores.iter().collect();
 
-    let results = Tabulation::from(&scores_refs);
-    assert!(results.is_ok());
+    let results = Tabulation::full(&scores_refs).unwrap();
 
-    // let outcomes = &results.outcomes;
-    // assert!()
+    let outcomes = &results.outcomes;
+
+    assert!(match outcomes[0] {
+      TabulationOutcome::Win{ place: 1u8, who } => *who == competitors[0],
+      _ => false
+    });
+    assert!(match outcomes[1] {
+      TabulationOutcome::Win{ place: 2u8, who } => *who == competitors[1],
+      _ => false
+    });
+    assert!(match outcomes[2] {
+      TabulationOutcome::Win{ place: 3u8, who } => *who == competitors[2],
+      _ => false
+    });
+    assert!(match outcomes[3] {
+      TabulationOutcome::Win{ place: 4u8, who } => *who == competitors[3],
+      _ => false
+    });
+
+    let products = &results.products;
+
+    assert!(products.iter().find(|product| {
+      *product.favored == competitors[0] &&
+      *product.unfavored == competitors[1] &&
+      product.factor == ResultFactor::ClearMajority
+    }).is_some());
+
+    assert!(products.iter().find(|product| {
+      *product.favored == competitors[1] &&
+      *product.unfavored == competitors[2] &&
+      product.factor == ResultFactor::GreaterMajority
+    }).is_some());
+
+    assert!(products.iter().find(|product| {
+      *product.favored == competitors[2] &&
+      *product.unfavored == competitors[3] &&
+      product.factor == ResultFactor::ClearMajority
+    }).is_some());
+  }
+
+  #[test]
+  fn com_rp_scoring_equal_majority() {
+    let judges = generate_random_judges(5);
+    let competitors = generate_random_competitors(5);
+    let scores_table = vec![
+      vec![3, 2, 1, 1, 4],
+      vec![2, 1, 3, 3, 2],
+      vec![1, 4, 4, 2, 3],
+      vec![5, 3, 2, 4, 1],
+      vec![4, 5, 5, 5, 5]
+    ];
+    let scores = generate_ordinals(
+      &judges,
+      &competitors,
+      scores_table
+    );
+    let scores_refs: Vec<&CompetitorOrdinals> = scores.iter().collect();
+
+    let results = Tabulation::full(&scores_refs).unwrap();
+
+    let outcomes = &results.outcomes;
+
+    assert!(match outcomes[0] {
+      TabulationOutcome::Win{ place: 1u8, who } => *who == competitors[0],
+      _ => false
+    });
+    assert!(match outcomes[1] {
+      TabulationOutcome::Win{ place: 2u8, who } => *who == competitors[1],
+      _ => false
+    });
+    assert!(match outcomes[2] {
+      TabulationOutcome::Win{ place: 3u8, who } => *who == competitors[2],
+      _ => false
+    });
+    assert!(match outcomes[3] {
+      TabulationOutcome::Win{ place: 4u8, who } => *who == competitors[3],
+      _ => false
+    });
+    assert!(match outcomes[4] {
+      TabulationOutcome::Win{ place: 5u8, who } => *who == competitors[4],
+      _ => false
+    });
+
+    let products = &results.products;
+
+    assert!(products.iter().find(|product| {
+      *product.favored == competitors[0] &&
+      *product.unfavored == competitors[1] &&
+      product.factor == ResultFactor::SumBelow
+    }).is_some());
+
+    assert!(products.iter().find(|product| {
+      *product.favored == competitors[1] &&
+      *product.unfavored == competitors[2] &&
+      product.factor == ResultFactor::ClearMajority
+    }).is_some());
+
+    assert!(products.iter().find(|product| {
+      *product.favored == competitors[2] &&
+      *product.unfavored == competitors[3] &&
+      product.factor == ResultFactor::FollowingScore
+    }).is_some());
+
+    assert!(products.iter().find(|product| {
+      *product.favored == competitors[3] &&
+      *product.unfavored == competitors[4] &&
+      product.factor == ResultFactor::ClearMajority
+    }).is_some());
   }
 }
