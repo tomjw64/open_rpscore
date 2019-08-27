@@ -771,4 +771,14 @@ mod tests {
       })
       .is_some());
   }
+
+  #[test]
+  fn com_rp_scoring_two_equal_scores() {
+    assert!(false, "Incomplete Test");
+  }
+
+  #[test]
+  fn com_rp_scoring_completely_equal() {
+    assert!(false, "Incomplete Test");
+  }
 }
