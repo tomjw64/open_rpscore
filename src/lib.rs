@@ -774,7 +774,66 @@ mod tests {
 
   #[test]
   fn com_rp_scoring_two_equal_scores() {
-    assert!(false, "Incomplete Test");
+    let judges = generate_random_judges(5);
+    let competitors = generate_random_competitors(4);
+    let scores_table = vec![
+      vec![1, 2, 1, 1, 3],
+      vec![2, 1, 3, 3, 4],
+      vec![3, 3, 2, 4, 1],
+      vec![4, 4, 4, 2, 2],
+    ];
+    let scores = generate_ordinals(&judges, &competitors, scores_table);
+    let scores_refs: Vec<&CompetitorOrdinals> = scores.iter().collect();
+
+    let results = Tabulation::full(&scores_refs).unwrap();
+
+    let outcomes = &results.outcomes;
+
+    assert!(match outcomes[0] {
+      TabulationOutcome::Win { place: 1u8, who } => *who == competitors[0],
+      _ => false,
+    });
+    assert!(match outcomes[1] {
+      TabulationOutcome::Win { place: 2u8, who } => *who == competitors[1],
+      _ => false,
+    });
+    assert!(match outcomes[2] {
+      TabulationOutcome::Win { place: 3u8, who } => *who == competitors[2],
+      _ => false,
+    });
+    assert!(match outcomes[3] {
+      TabulationOutcome::Win { place: 4u8, who } => *who == competitors[3],
+      _ => false,
+    });
+
+    let products = &results.products;
+
+    assert!(products
+      .iter()
+      .find(|product| {
+        *product.favored == competitors[0]
+          && *product.unfavored == competitors[1]
+          && product.factor == ResultFactor::ClearMajority
+      })
+      .is_some());
+
+    assert!(products
+      .iter()
+      .find(|product| {
+        *product.favored == competitors[1]
+          && *product.unfavored == competitors[2]
+          && product.factor == ResultFactor::Battle
+      })
+      .is_some());
+
+    assert!(products
+      .iter()
+      .find(|product| {
+        *product.favored == competitors[2]
+          && *product.unfavored == competitors[3]
+          && product.factor == ResultFactor::ClearMajority
+      })
+      .is_some());
   }
 
   #[test]
