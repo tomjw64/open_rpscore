@@ -52,7 +52,7 @@ impl CompetitorOrdinals<'_> {
       );
     });
 
-    let result = initial
+    initial
       .iter()
       .map(|scores| CompetitorOrdinals {
         competitor: scores.competitor,
@@ -72,8 +72,7 @@ impl CompetitorOrdinals<'_> {
           })
           .collect(),
       })
-      .collect();
-    result
+      .collect()
   }
 
   fn below_or_equal(&self, value: u8) -> impl Iterator<Item = &u8> {
@@ -154,12 +153,14 @@ struct Tabulation<'a> {
   products: Vec<ResultComparison<'a>>,
 }
 
-impl<'a: 'b, 'b> Tabulation<'_> {
+type StepFunction = dyn for<'a> Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a>;
+
+impl Tabulation<'_> {
   fn comparison_step<T: PartialEq, G: Fn(&CompetitorOrdinals) -> T, S: Fn(&T, &T) -> Ordering>(
     group_function: G,
     sort_function: S,
     factor: impl Fn() -> ResultFactor,
-  ) -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
+  ) -> impl for<'a> Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
     move |place, tied| {
       let mut result = Tabulation {
         outcomes: vec![],
@@ -207,14 +208,14 @@ impl<'a: 'b, 'b> Tabulation<'_> {
     }
   }
 
-  fn clear_majority_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
+  fn clear_majority_step() -> Box<StepFunction> {
     let group_function = |scores: &CompetitorOrdinals| scores.majority_reached_ordinal();
     let sort_function = |key: &u8, key_other: &u8| key.cmp(key_other);
     let factor = || ResultFactor::ClearMajority;
     Tabulation::comparison_step(group_function, sort_function, factor)
   }
 
-  fn greater_majority_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
+  fn greater_majority_step() -> impl for<'a> Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
     let group_function =
       |scores: &CompetitorOrdinals| scores.count_below_or_equal(scores.majority_reached_ordinal());
     let sort_function = |key: &u8, key_other: &u8| key.cmp(key_other).reverse();
@@ -222,7 +223,7 @@ impl<'a: 'b, 'b> Tabulation<'_> {
     Tabulation::comparison_step(group_function, sort_function, factor)
   }
 
-  fn sum_below_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
+  fn sum_below_step() -> impl for<'a> Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
     let group_function =
       |scores: &CompetitorOrdinals| scores.sum_below_or_equal(scores.majority_reached_ordinal());
     let sort_function = |key: &u8, key_other: &u8| key.cmp(key_other);
@@ -230,7 +231,7 @@ impl<'a: 'b, 'b> Tabulation<'_> {
     Tabulation::comparison_step(group_function, sort_function, factor)
   }
 
-  fn following_score_step() -> impl Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
+  fn following_score_step() -> impl for<'a> Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
     fn u8_slice_compare(slice: &[u8], other_slice: &[u8]) -> Ordering {
       let zipped: Vec<(u8, &u8)> = slice.iter().cloned().zip(other_slice).collect();
       for (slice_u8, other_slice_u8) in zipped {
@@ -249,7 +250,39 @@ impl<'a: 'b, 'b> Tabulation<'_> {
     Tabulation::comparison_step(group_function, sort_function, factor)
   }
 
-  fn step_collapse(
+  fn battle_step() -> impl for<'a> Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
+    |place, tied| {
+      let tied_clone: Vec<&CompetitorOrdinals> = tied.to_vec();
+      let minimized = CompetitorOrdinals::minimize(tied);
+      let minimized_refs: Vec<&CompetitorOrdinals> = minimized.iter().collect();
+
+      let comparison_steps: [Box<dyn for<'b> Fn(u8, &[&'b CompetitorOrdinals]) -> Tabulation<'b>>; 4] = [
+        Box::new(Tabulation::clear_majority_step()),
+        Box::new(Tabulation::greater_majority_step()),
+        Box::new(Tabulation::sum_below_step()),
+        Box::new(Tabulation::following_score_step()),
+      ];
+
+      let initial = Tabulation {
+        outcomes: vec![TabulationOutcome::Tie {
+          place: 1u8,
+          who: minimized_refs,
+        }],
+        products: vec![],
+      };
+
+      let comparison_round = comparison_steps.iter().fold(initial, |collapsed, step| {
+        Tabulation::step_collapse(collapsed, step)
+      });
+
+      Tabulation {
+        outcomes: vec![],
+        products: vec![]
+      }
+    }
+  }
+
+  fn step_collapse<'a: 'b, 'b>(
     step_results: Tabulation<'a>,
     next_step: &(dyn Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> + 'b),
   ) -> Tabulation<'a> {
@@ -271,8 +304,8 @@ impl<'a: 'b, 'b> Tabulation<'_> {
     }
   }
 
-  fn full(scores: &[&'a CompetitorOrdinals<'a>]) -> Result<Tabulation<'a>, TabulationError> {
-    let comparison_steps: [Box<dyn Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> + 'b>; 4] = [
+  fn full<'a>(scores: &[&'a CompetitorOrdinals<'a>]) -> Result<Tabulation<'a>, TabulationError> {
+    let comparison_steps: [Box<dyn Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a>>; 4] = [
       Box::new(Tabulation::clear_majority_step()),
       Box::new(Tabulation::greater_majority_step()),
       Box::new(Tabulation::sum_below_step()),
@@ -289,13 +322,6 @@ impl<'a: 'b, 'b> Tabulation<'_> {
     let comparison_round = comparison_steps.iter().fold(initial, |collapsed, step| {
       Tabulation::step_collapse(collapsed, step)
     });
-
-    // let equal_scores_round = comparison_round.outcomes.iter().filter(|outcome| {
-    //   match outcome {
-    //     TabulationOutcome::Tie { place, who } => true,
-    //     _ => {}
-    //   }
-    // });
 
     Ok(comparison_round)
   }
