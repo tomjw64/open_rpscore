@@ -153,8 +153,6 @@ struct Tabulation<'a> {
   products: Vec<ResultComparison<'a>>,
 }
 
-type StepFunction = dyn for<'a> Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a>;
-
 impl Tabulation<'_> {
   fn comparison_step<T: PartialEq, G: Fn(&CompetitorOrdinals) -> T, S: Fn(&T, &T) -> Ordering>(
     group_function: G,
@@ -208,7 +206,7 @@ impl Tabulation<'_> {
     }
   }
 
-  fn clear_majority_step() -> Box<StepFunction> {
+  fn clear_majority_step() -> impl for<'a> Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> {
     let group_function = |scores: &CompetitorOrdinals| scores.majority_reached_ordinal();
     let sort_function = |key: &u8, key_other: &u8| key.cmp(key_other);
     let factor = || ResultFactor::ClearMajority;
@@ -282,9 +280,9 @@ impl Tabulation<'_> {
     }
   }
 
-  fn step_collapse<'a: 'b, 'b>(
+  fn step_collapse<'a>(
     step_results: Tabulation<'a>,
-    next_step: &(dyn Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a> + 'b),
+    next_step: &dyn for<'b> Fn(u8, &[&'b CompetitorOrdinals]) -> Tabulation<'b>,
   ) -> Tabulation<'a> {
     let mut collapse_outcomes: Vec<TabulationOutcome<'a>> = vec![];
     let mut collapse_products: Vec<ResultComparison<'a>> = step_results.products;
@@ -305,7 +303,7 @@ impl Tabulation<'_> {
   }
 
   fn full<'a>(scores: &[&'a CompetitorOrdinals<'a>]) -> Result<Tabulation<'a>, TabulationError> {
-    let comparison_steps: [Box<dyn Fn(u8, &[&'a CompetitorOrdinals]) -> Tabulation<'a>>; 4] = [
+    let comparison_steps: [Box<dyn for<'b> Fn(u8, &[&'b CompetitorOrdinals]) -> Tabulation<'b>>; 4] = [
       Box::new(Tabulation::clear_majority_step()),
       Box::new(Tabulation::greater_majority_step()),
       Box::new(Tabulation::sum_below_step()),
