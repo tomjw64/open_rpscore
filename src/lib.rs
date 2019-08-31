@@ -1,6 +1,4 @@
 #![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_mut)]
 
 use itertools::Itertools;
 use std::cmp::Ordering;
@@ -76,7 +74,6 @@ struct Tabulation<'a> {
 
 impl CompetitorOrdinals<'_> {
   fn minimize<'a, 'b>(initial: &[&'a CompetitorOrdinals<'b>]) -> Vec<CompetitorOrdinals<'b>> {
-    let num_competitors = initial.len();
     let judges = initial[0].ordinal_scores.keys();
     let mut grouped_hash: HashMap<&'a Judge, Vec<u8>> = HashMap::new();
     judges.for_each(|&judge| {
@@ -122,7 +119,7 @@ impl CompetitorOrdinals<'_> {
     *self
       .ordinal_scores
       .iter()
-      .find(|(judge, ordinal)| judge.head)
+      .find(|(judge, _)| judge.head)
       .expect("Ordinals have not been validated")
       .1
   }
@@ -330,7 +327,7 @@ impl Tabulation<'_> {
           let ResultComparison {
             favored,
             unfavored,
-            factor,
+            factor: _,
           } = comparison;
           products_from_tied.push(ResultComparison {
             favored: tied
@@ -370,7 +367,7 @@ impl Tabulation<'_> {
     let mut collapse_products: Vec<ResultComparison<'a>> = step_results.products;
     step_results.outcomes.into_iter().for_each(|outcome| {
       match outcome {
-        TabulationOutcome::Win { place, who } => collapse_outcomes.push(outcome),
+        TabulationOutcome::Win { place: _, who: _ } => collapse_outcomes.push(outcome),
         TabulationOutcome::Tie { place, who } => {
           let next_step_results = next_step(place, &who);
           collapse_outcomes.extend(next_step_results.outcomes.into_iter());
@@ -417,7 +414,7 @@ impl Tabulation<'_> {
           println!("Ordinal too big: {:?}!", ordinal);
           return;
         }
-        let mut original = judges_scores_remaining
+        let original = judges_scores_remaining
           .get_mut(judge)
           .expect("Judges are from the same set")
           .get_mut((ordinal - 1) as usize)
@@ -1104,6 +1101,7 @@ mod tests {
     });
   }
 
+  #[test]
   fn error_no_scores() {
     let scores_refs: Vec<&CompetitorOrdinals> = vec![];
 
