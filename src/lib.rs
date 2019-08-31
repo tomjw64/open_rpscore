@@ -31,6 +31,49 @@ struct CompetitorOrdinals<'a> {
   ordinal_scores: HashMap<&'a Judge, u8>,
 }
 
+#[derive(PartialEq, Debug)]
+enum ResultFactor {
+  ClearMajority,
+  GreaterMajority,
+  SumBelow,
+  FollowingScore,
+  InstantRunoff,
+  HeadJudge,
+}
+
+#[derive(PartialEq, Debug)]
+enum TabulationError {
+  ZeroSize,
+  NoHeadJudge,
+  DataIncomplete,
+  OrdinalsDiscontinuous,
+}
+
+#[derive(Debug)]
+struct ResultComparison<'a> {
+  favored: &'a Competitor,
+  unfavored: &'a Competitor,
+  factor: ResultFactor,
+}
+
+#[derive(Debug)]
+enum TabulationOutcome<'a> {
+  Win {
+    place: u8,
+    who: &'a Competitor,
+  },
+  Tie {
+    place: u8,
+    who: Vec<&'a CompetitorOrdinals<'a>>,
+  },
+}
+
+#[derive(Debug)]
+struct Tabulation<'a> {
+  outcomes: Vec<TabulationOutcome<'a>>,
+  products: Vec<ResultComparison<'a>>,
+}
+
 impl CompetitorOrdinals<'_> {
   fn minimize<'a, 'b>(initial: &[&'a CompetitorOrdinals<'b>]) -> Vec<CompetitorOrdinals<'b>> {
     let num_competitors = initial.len();
@@ -76,7 +119,12 @@ impl CompetitorOrdinals<'_> {
   }
 
   fn head_judge_score(&self) -> u8 {
-    *self.ordinal_scores.iter().find(|(judge, ordinal)| judge.head).expect("Ordinals have not been validated").1
+    *self
+      .ordinal_scores
+      .iter()
+      .find(|(judge, ordinal)| judge.head)
+      .expect("Ordinals have not been validated")
+      .1
   }
 
   fn below_or_equal(&self, value: u8) -> impl Iterator<Item = &u8> {
@@ -114,47 +162,6 @@ impl CompetitorOrdinals<'_> {
       .map(|ordinal| self.count_below_or_equal(ordinal as u8))
       .collect()
   }
-}
-
-#[derive(PartialEq, Debug)]
-enum ResultFactor {
-  ClearMajority,
-  GreaterMajority,
-  SumBelow,
-  FollowingScore,
-  InstantRunoff,
-  HeadJudge,
-}
-
-#[derive(PartialEq, Debug)]
-enum TabulationError {
-  ZeroSize,
-  NoHeadJudge,
-}
-
-#[derive(Debug)]
-struct ResultComparison<'a> {
-  favored: &'a Competitor,
-  unfavored: &'a Competitor,
-  factor: ResultFactor,
-}
-
-#[derive(Debug)]
-enum TabulationOutcome<'a> {
-  Win {
-    place: u8,
-    who: &'a Competitor,
-  },
-  Tie {
-    place: u8,
-    who: Vec<&'a CompetitorOrdinals<'a>>,
-  },
-}
-
-#[derive(Debug)]
-struct Tabulation<'a> {
-  outcomes: Vec<TabulationOutcome<'a>>,
-  products: Vec<ResultComparison<'a>>,
 }
 
 impl Tabulation<'_> {
@@ -347,9 +354,9 @@ impl Tabulation<'_> {
     }
   }
 
-  fn head_judge_tie_break() -> impl for<'a> Fn(u8, &[&'a CompetitorOrdinals<'a>]) -> Tabulation<'a> {
-    let group_function =
-      |scores: &CompetitorOrdinals| scores.head_judge_score();
+  fn head_judge_tie_break() -> impl for<'a> Fn(u8, &[&'a CompetitorOrdinals<'a>]) -> Tabulation<'a>
+  {
+    let group_function = |scores: &CompetitorOrdinals| scores.head_judge_score();
     let sort_function = |key: &u8, key_other: &u8| key.cmp(key_other);
     let factor = || ResultFactor::HeadJudge;
     Tabulation::comparison_step(group_function, sort_function, factor)
@@ -377,7 +384,75 @@ impl Tabulation<'_> {
     }
   }
 
+  fn validate(scores: &[&CompetitorOrdinals]) -> Option<TabulationError> {
+    let num_competitors = scores.len() as u8;
+    if num_competitors == 0 {
+      return Some(TabulationError::ZeroSize);
+    }
+
+    let num_judges = scores[0].ordinal_scores.len();
+    if scores
+      .iter()
+      .any(|score| score.ordinal_scores.len() != num_judges)
+    {
+      return Some(TabulationError::DataIncomplete);
+    }
+
+    if scores[0].ordinal_scores.keys().all(|judge| !judge.head) {
+      return Some(TabulationError::NoHeadJudge);
+    }
+
+    let mut discontinuity = false;
+    let mut judges_scores_remaining: HashMap<&Judge, Vec<Option<u8>>> = HashMap::new();
+    scores[0].ordinal_scores.keys().for_each(|&judge| {
+      judges_scores_remaining.insert(judge, (1..=num_competitors).map(|i| Some(i)).collect());
+    });
+    scores.iter().for_each(|score| {
+      if discontinuity {
+        return;
+      }
+      score.ordinal_scores.iter().for_each(|(judge, ordinal)| {
+        if ordinal > &num_competitors {
+          discontinuity = true;
+          println!("Ordinal too big: {:?}!", ordinal);
+          return;
+        }
+        let mut original = judges_scores_remaining
+          .get_mut(judge)
+          .expect("Judges are from the same set")
+          .get_mut((ordinal - 1) as usize)
+          .expect("Vec size unchanged");
+        match original {
+          Some(_) => {
+            *original = None;
+          }
+          None => {
+            discontinuity = true;
+            println!("Dupe: {:?}", ordinal - 1);
+            return;
+          }
+        };
+      });
+    });
+    if judges_scores_remaining
+      .values()
+      .any(|scores_each| scores_each.iter().any(|score| score.is_some()))
+    {
+      discontinuity = true
+    }
+    if discontinuity {
+      return Some(TabulationError::OrdinalsDiscontinuous);
+    }
+
+    None
+  }
+
   fn full<'a>(scores: &[&'a CompetitorOrdinals<'a>]) -> Result<Tabulation<'a>, TabulationError> {
+    match Tabulation::validate(scores) {
+      Some(error) => return Err(error),
+      None => {}
+    }
+
     let comparison_steps: [Box<dyn for<'b> Fn(u8, &[&'b CompetitorOrdinals<'b>]) -> Tabulation<'b>>;
       6] = [
       Box::new(Tabulation::clear_majority_step()),
@@ -385,7 +460,7 @@ impl Tabulation<'_> {
       Box::new(Tabulation::sum_below_step()),
       Box::new(Tabulation::following_score_step()),
       Box::new(Tabulation::runoff_step()),
-      Box::new(Tabulation::head_judge_tie_break())
+      Box::new(Tabulation::head_judge_tie_break()),
     ];
 
     let initial = Tabulation {
@@ -426,6 +501,12 @@ mod tests {
     vec![Judge::random(true)]
       .into_iter()
       .chain(iter::repeat_with(|| Judge::random(false)))
+      .take(number)
+      .collect()
+  }
+
+  fn generate_random_judges_no_head(number: usize) -> Vec<Judge> {
+    iter::repeat_with(|| Judge::random(false))
       .take(number)
       .collect()
   }
@@ -1000,5 +1081,100 @@ mod tests {
           && product.factor == ResultFactor::HeadJudge
       })
       .is_some());
+  }
+
+  #[test]
+  fn error_no_head_judge() {
+    let judges = generate_random_judges_no_head(4);
+    let competitors = generate_random_competitors(4);
+    let scores_table = vec![
+      vec![1, 1, 1, 1],
+      vec![2, 2, 2, 2],
+      vec![3, 3, 3, 3],
+      vec![4, 4, 4, 4],
+    ];
+    let scores = generate_ordinals(&judges, &competitors, scores_table);
+    let scores_refs: Vec<&CompetitorOrdinals> = scores.iter().collect();
+
+    let results = Tabulation::full(&scores_refs).unwrap_err();
+
+    assert!(match results {
+      TabulationError::NoHeadJudge => true,
+      _ => false,
+    });
+  }
+
+  fn error_no_scores() {
+    let scores_refs: Vec<&CompetitorOrdinals> = vec![];
+
+    let results = Tabulation::full(&scores_refs).unwrap_err();
+
+    assert!(match results {
+      TabulationError::ZeroSize => true,
+      _ => false,
+    });
+  }
+
+  #[test]
+  fn error_data_incomplete_missing() {
+    let judges = generate_random_judges(4);
+    let competitors = generate_random_competitors(4);
+    let scores_table = vec![
+      vec![1, 1, 1],
+      vec![2, 2, 2, 2],
+      vec![3, 3, 3, 3],
+      vec![4, 4, 4, 4],
+    ];
+    let scores = generate_ordinals(&judges, &competitors, scores_table);
+    let scores_refs: Vec<&CompetitorOrdinals> = scores.iter().collect();
+
+    let results = Tabulation::full(&scores_refs).unwrap_err();
+
+    assert!(match results {
+      TabulationError::DataIncomplete => true,
+      _ => false,
+    });
+  }
+
+  #[test]
+  fn error_ordinals_discontinuous_dupe() {
+    let judges = generate_random_judges(4);
+    let competitors = generate_random_competitors(4);
+    let scores_table = vec![
+      vec![1, 1, 1, 1],
+      vec![2, 2, 2, 2],
+      vec![3, 3, 3, 3],
+      vec![4, 4, 2, 4],
+    ];
+    let scores = generate_ordinals(&judges, &competitors, scores_table);
+    let scores_refs: Vec<&CompetitorOrdinals> = scores.iter().collect();
+
+    let results = Tabulation::full(&scores_refs).unwrap_err();
+
+    assert!(match results {
+      TabulationError::OrdinalsDiscontinuous => true,
+      _ => false,
+    });
+  }
+
+  #[test]
+  fn error_ordinals_discontinuous_too_high() {
+    let judges = generate_random_judges(4);
+    let competitors = generate_random_competitors(4);
+    let scores_table = vec![
+      vec![1, 1, 1, 1],
+      vec![2, 2, 2, 2],
+      vec![3, 3, 3, 3],
+      vec![4, 4, 5, 4],
+    ];
+    let scores = generate_ordinals(&judges, &competitors, scores_table);
+    let scores_refs: Vec<&CompetitorOrdinals> = scores.iter().collect();
+
+    let results = Tabulation::full(&scores_refs).unwrap_err();
+
+    assert!(match results {
+      TabulationError::OrdinalsDiscontinuous => true,
+      _ => false,
+    });
   }
 }
